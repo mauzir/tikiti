@@ -118,8 +118,10 @@ public class Screen {
 
                 if (pipe) {
                     String fmt = "bv*[height<=" + srcH + "][ext=webm]/b[height<=" + srcH + "]/bv*[height<=" + srcH + "]/b";
-                    ytp = new ProcessBuilder(ytBin, "--no-playlist", "-q", "--no-warnings",
-                            "-f", fmt, "-o", "-", url).start();
+                    ProcessBuilder ypb = new ProcessBuilder(ytBin, "--no-playlist", "-q", "--no-warnings",
+                            "-f", fmt, "-o", "-", url);
+                    ypb.environment().put("TMPDIR", ((TikitiPlugin) plugin).tmpDir().getAbsolutePath());
+                    ytp = ypb.start();
                     yt = ytp;
                     logStream(ytp, "yt-dlp: ");
                     cmd.addAll(List.of("-re", "-i", "pipe:0"));
@@ -196,7 +198,7 @@ public class Screen {
 
     public void stop() {
         running = false;
-        if (yt != null) yt.destroyForcibly();
+        if (yt != null) yt.destroy();
         if (ff != null) ff.destroyForcibly();
         if (sender != null) sender.cancel();
         frames.forEach(ItemFrame::remove);

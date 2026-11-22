@@ -15,9 +15,27 @@ public class TikitiPlugin extends JavaPlugin implements CommandExecutor {
             "^https://(www\\.|m\\.)?(youtube\\.com/watch\\?v=|youtu\\.be/)[\\w-]+.*$");
     private final Map<UUID, Screen> screens = new HashMap<>();
 
+    public java.io.File tmpDir() {
+        java.io.File d = new java.io.File(getDataFolder(), "tmp");
+        d.mkdirs();
+        return d;
+    }
+
+    private static void deleteRec(java.io.File f) {
+        java.io.File[] c = f.listFiles();
+        if (c != null) for (java.io.File x : c) deleteRec(x);
+        f.delete();
+    }
+
+    public void cleanTmp() {
+        java.io.File[] fs = tmpDir().listFiles();
+        if (fs != null) for (java.io.File f : fs) deleteRec(f);
+    }
+
     @Override
     public void onEnable() {
         saveDefaultConfig();
+        cleanTmp();
         for (String key : new String[]{"ytdlp", "ffmpeg"}) {
             java.io.File f = new java.io.File(getConfig().getString(key, key));
             if (f.isFile()) {
@@ -49,6 +67,7 @@ public class TikitiPlugin extends JavaPlugin implements CommandExecutor {
     public void onDisable() {
         screens.values().forEach(Screen::stop);
         screens.clear();
+        cleanTmp();
     }
 
     @Override
@@ -61,6 +80,7 @@ public class TikitiPlugin extends JavaPlugin implements CommandExecutor {
             Screen old = screens.remove(p.getUniqueId());
             p.sendMessage(old != null ? "§aTelewizor wyłączony." : "§cNie masz włączonego telewizora.");
             if (old != null) old.stop();
+            org.bukkit.Bukkit.getScheduler().runTaskLater(this, () -> { if (screens.isEmpty()) cleanTmp(); }, 100L);
             return true;
         }
         if (!YT.matcher(a[0]).matches()) { p.sendMessage("§cPodaj poprawny link do YouTube."); return true; }
