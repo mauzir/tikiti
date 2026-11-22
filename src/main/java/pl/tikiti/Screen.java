@@ -98,16 +98,22 @@ public class Screen {
 
         Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
             try {
-                yt = new ProcessBuilder(ytBin, "--no-playlist", "-g",
-                        "-f", "best[height<=" + srcH + "]/best", url)
-                        .redirectErrorStream(false).start();
-                String stream;
+                yt = new ProcessBuilder(ytBin, "--no-playlist", "--no-warnings", "-g",
+                        "-f", "bv*[height<=" + srcH + "]/b[height<=" + srcH + "]/b", url)
+                        .redirectErrorStream(true).start();
+                String stream = null;
+                List<String> out = new ArrayList<>();
                 try (BufferedReader br = new BufferedReader(
                         new InputStreamReader(yt.getInputStream(), StandardCharsets.UTF_8))) {
-                    stream = br.readLine();
+                    String line;
+                    while ((line = br.readLine()) != null) {
+                        out.add(line);
+                        if (stream == null && line.startsWith("http")) stream = line;
+                    }
                 }
-                if (stream == null || stream.isBlank()) {
-                    plugin.getLogger().warning("yt-dlp nie zwrocil linku (zaktualizuj yt-dlp?)");
+                if (stream == null) {
+                    plugin.getLogger().warning("yt-dlp nie zwrocil linku. Odpowiedz yt-dlp:");
+                    for (String l : out) plugin.getLogger().warning("  " + l);
                     return;
                 }
                 ff = new ProcessBuilder(ffBin, "-loglevel", "quiet", "-re", "-i", stream,
