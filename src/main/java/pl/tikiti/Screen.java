@@ -94,7 +94,10 @@ public final class Screen {
             synchronized (playbackLock) { if (!active(token)) { video.destroyForcibly(); return; } videoFfmpeg = video; }
             logStream(video, "ffmpeg video: ");
             pipe(source, video, token, "Tikiti-video-pipe");
-            AudioSink sink = createAudioSink(); if (sink != null) startAudio(token, ytDlp, ffmpeg, offset, sink);
+            // The server's bundled PyInstaller yt-dlp crashes when two copies extract at once.
+            // Keep video on the proven single-process pipeline; audio is enabled only after a
+            // dedicated one-process muxing path is available.
+            AudioSink sink = null;
             byte[] buffer = new byte[pixelWidth * pixelHeight * 3]; long framesRead = 0;
             try (DataInputStream input = new DataInputStream(new BufferedInputStream(video.getInputStream(), 1 << 20))) {
                 while (active(token)) {
