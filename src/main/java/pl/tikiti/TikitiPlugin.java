@@ -10,7 +10,7 @@ import org.bukkit.util.RayTraceResult;
 import java.util.*;
 import java.util.regex.Pattern;
 
-public class TikitiPlugin extends JavaPlugin implements CommandExecutor {
+public class TikitiPlugin extends JavaPlugin implements CommandExecutor, TabCompleter {
     private static final Pattern YT = Pattern.compile(
             "^https://(www\\.|m\\.)?(youtube\\.com/watch\\?v=|youtu\\.be/)[\\w-]+.*$");
     private final Map<UUID, Screen> screens = new HashMap<>();
@@ -61,6 +61,13 @@ public class TikitiPlugin extends JavaPlugin implements CommandExecutor {
             }
         });
         getCommand("tikiti").setExecutor(this);
+        getCommand("tikiti").setTabCompleter(this);
+        try {
+            VoiceBridge.register(this);
+            getLogger().info("Simple Voice Chat wykryty: dźwięk ekranów będzie pozycyjny.");
+        } catch (IllegalStateException e) {
+            getLogger().info("Simple Voice Chat niedostępny: ekran będzie bez dźwięku.");
+        }
     }
 
     @Override
@@ -74,13 +81,40 @@ public class TikitiPlugin extends JavaPlugin implements CommandExecutor {
     public boolean onCommand(CommandSender s, Command c, String l, String[] a) {
         if (!(s instanceof Player p)) { s.sendMessage("Tylko dla graczy."); return true; }
         if (!p.hasPermission("tikiti.use")) { p.sendMessage("§cBrak uprawnień."); return true; }
-        if (a.length == 0) { p.sendMessage("§eUżycie: /tikiti <link|stop> [szer] [wys]"); return true; }
+        if (a.length == 0) { usage(p); return true; }
 
         if (a[0].equalsIgnoreCase("stop")) {
             Screen old = screens.remove(p.getUniqueId());
             p.sendMessage(old != null ? "§aTelewizor wyłączony." : "§cNie masz włączonego telewizora.");
             if (old != null) old.stop();
             org.bukkit.Bukkit.getScheduler().runTaskLater(this, () -> { if (screens.isEmpty()) cleanTmp(); }, 100L);
+            return true;
+        }
+        Screen current = screens.get(p.getUniqueId());
+        if (a[0].equalsIgnoreCase("pause")) {
+            if (current == null) p.sendMessage("§cNie masz włączonego telewizora.");
+            else if (!current.pause()) p.sendMessage("§eFilm już jest wstrzymany.");
+            else p.sendMessage("§aFilm wstrzymany na §f" + current.formattedTime() + "§a.");
+            return true;
+        }
+        if (a[0].equalsIgnoreCase("resume")) {
+            if (current == null) p.sendMessage("§cNie masz włączonego telewizora.");
+            else if (!current.resume()) p.sendMessage("§eFilm już jest odtwarzany.");
+            else p.sendMessage("§aWznowiono od §f" + current.formattedTime() + "§a.");
+            return true;
+        }
+        if (a[0].equalsIgnoreCase("time")) {
+            if (current == null) p.sendMessage("§cNie masz włączonego telewizora.");
+            else p.sendMessage("§eCzas filmu: §f" + current.formattedTime() + (current.isPaused() ? " §7(pauza)" : ""));
+            return true;
+        }
+        if (a[0].equalsIgnoreCase("seek")) {
+            if (current == null) { p.sendMessage("§cNie masz włączonego telewizora."); return true; }
+            if (a.length != 2) { p.sendMessage("§eUżycie: /tikiti seek <mm:ss|sekundy|+/-sekundy>"); return true; }
+            try {
+                current.seek(parseTime(a[1], current.currentSeconds()));
+                p.sendMessage("§aPrzewinięto do §f" + current.formattedTime() + "§a.");
+            } catch (IllegalArgumentException e) { p.sendMessage("§cNiepoprawny czas. Przykłady: 1:30, 90, +30, -10."); }
             return true;
         }
         if (!YT.matcher(a[0]).matches()) { p.sendMessage("§cPodaj poprawny link do YouTube."); return true; }
@@ -115,5 +149,33 @@ public class TikitiPlugin extends JavaPlugin implements CommandExecutor {
             p.sendMessage("§c" + e.getMessage());
         }
         return true;
+    }
+
+    private static double parseTime(String value, double current) {
+        boolean relative = value.startsWith("+") || value.startsWith("-");
+        String raw = relative ? value.substring(1) : value;
+        if (raw.isEmpty()) throw new IllegalArgumentException();
+        String[] parts = raw.split(":", -1);
+        if (parts.length > 2) throw new IllegalArgumentException();
+        double seconds = Double.parseDouble(parts[parts.length - 1]);
+        if (parts.length == 2) seconds += Integer.parseInt(parts[0]) * 60.0;
+        if (!Double.isFinite(seconds) || seconds < 0) throw new IllegalArgumentException();
+        return Math.max(0, relative ? (value.charAt(0) == '-' ? current - seconds : current + seconds) : seconds);
+    }
+
+    private static void usage(Player player) {
+        player.sendMessage("§e/tikiti <link> [szer] [wys] §7- uruchamia ekran");
+        player.sendMessage("§e/tikiti pause|resume|stop|time");
+        player.sendMessage("§e/tikiti seek <mm:ss|sekundy|+/-sekundy>");
+    }
+
+    @Override public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
+        if (args.length == 1) return prefix(args[0], List.of("pause", "resume", "seek", "time", "stop"));
+        if (args.length == 2 && args[0].equalsIgnoreCase("seek")) return prefix(args[1], List.of("0:30", "1:30", "+30", "-10", "90"));
+        return Collections.emptyList();
+    }
+
+    private static List<String> prefix(String typed, List<String> values) {
+        return values.stream().filter(value -> value.regionMatches(true, 0, typed, 0, typed.length())).toList();
     }
 }

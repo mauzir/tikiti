@@ -17,191 +17,131 @@ import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 
-public class Screen {
-    private static final int T = 128;
-
-    static class Tile extends MapRenderer {
-        volatile BufferedImage img = new BufferedImage(T, T, BufferedImage.TYPE_INT_RGB);
+public final class Screen {
+    private static final int TILE = 128;
+    static final class Tile extends MapRenderer {
+        volatile BufferedImage image = new BufferedImage(TILE, TILE, BufferedImage.TYPE_INT_RGB);
         Tile() { super(false); }
-        @Override public void render(MapView map, MapCanvas canvas, Player player) {
-            canvas.drawImage(0, 0, img);
-        }
+        @Override public void render(MapView map, MapCanvas canvas, Player player) { canvas.drawImage(0, 0, image); }
     }
 
-    private final Plugin plugin;
-    private final World world;
-    private final int w, h;
-    private final Tile[] tiles;
-    private final List<ItemFrame> frames = new ArrayList<>();
-    private final List<MapView> views = new ArrayList<>();
-    private final Location center;
-    private volatile boolean running = true;
-    private volatile Process yt, ff;
-    private BukkitTask sender;
+    private final Plugin plugin; private final World world; private final int width, height;
+    private final Tile[] tiles; private final List<ItemFrame> frames = new ArrayList<>();
+    private final List<MapView> views = new ArrayList<>(); private final Location center;
+    private final Object playbackLock = new Object();
+    private volatile boolean running = true, paused; private volatile long generation;
+    private volatile double positionSeconds; private volatile long startedAtNanos;
+    private volatile Process yt, videoFfmpeg, audioFfmpeg; private volatile AudioSink audio;
+    private BukkitTask mapSender; private String url;
 
-    public Screen(Plugin plugin, Block wall, BlockFace face, int w, int h) {
-        this.plugin = plugin; this.world = wall.getWorld(); this.w = w; this.h = h;
-        this.tiles = new Tile[w * h];
-
-        // "w prawo" z perspektywy patrzącego na ścianę
-        int dx = -face.getOppositeFace().getModZ();
-        int dz = face.getOppositeFace().getModX();
-        int left = (w - 1) / 2;
-
-        // sprawdź miejsce
-        Block[][] air = new Block[w][h];
-        for (int c = 0; c < w; c++) for (int y = 0; y < h; y++) {
-            Block b = wall.getRelative(dx * (c - left), y, dz * (c - left));
-            if (!b.getType().isSolid()) throw new IllegalStateException("Za mało litej ściany na ekran " + w + "x" + h + ".");
-            Block f = b.getRelative(face);
-            if (!f.isPassable()) throw new IllegalStateException("Przed ścianą coś stoi - zrób miejsce.");
-            air[c][y] = f;
+    public Screen(Plugin plugin, Block wall, BlockFace face, int width, int height) {
+        this.plugin = plugin; this.world = wall.getWorld(); this.width = width; this.height = height;
+        this.tiles = new Tile[width * height];
+        int dx = -face.getOppositeFace().getModZ(), dz = face.getOppositeFace().getModX(), left = (width - 1) / 2;
+        Block[][] air = new Block[width][height];
+        for (int col = 0; col < width; col++) for (int y = 0; y < height; y++) {
+            Block block = wall.getRelative(dx * (col - left), y, dz * (col - left));
+            if (!block.getType().isSolid()) throw new IllegalStateException("Za mało litej ściany na ekran " + width + "x" + height + ".");
+            Block front = block.getRelative(face);
+            if (!front.isPassable()) throw new IllegalStateException("Przed ścianą coś stoi - zrób miejsce.");
+            air[col][y] = front;
         }
-        center = air[w / 2][h / 2].getLocation().add(0.5, 0.5, 0.5);
-
-        for (int row = 0; row < h; row++) for (int c = 0; c < w; c++) {
-            Tile t = new Tile();
-            tiles[row * w + c] = t;
-            MapView v = Bukkit.createMap(world);
-            new ArrayList<>(v.getRenderers()).forEach(v::removeRenderer);
-            v.addRenderer(t);
-            views.add(v);
-            ItemStack map = new ItemStack(Material.FILLED_MAP);
-            MapMeta mm = (MapMeta) map.getItemMeta();
-            mm.setMapView(v);
-            map.setItemMeta(mm);
-            Block spot = air[c][h - 1 - row];
-            ItemFrame fr = world.spawn(spot.getLocation(), ItemFrame.class, e -> {
-                e.setFacingDirection(face, true);
-                e.setItem(map, false);
-                e.setVisible(false);
-                e.setFixed(true);
-                e.setItemDropChance(0f);
-            });
-            frames.add(fr);
+        center = air[width / 2][height / 2].getLocation().add(0.5, 0.5, 0.5);
+        for (int row = 0; row < height; row++) for (int col = 0; col < width; col++) {
+            Tile tile = new Tile(); tiles[row * width + col] = tile;
+            MapView view = Bukkit.createMap(world); new ArrayList<>(view.getRenderers()).forEach(view::removeRenderer); view.addRenderer(tile); views.add(view);
+            ItemStack map = new ItemStack(Material.FILLED_MAP); MapMeta meta = (MapMeta) map.getItemMeta(); meta.setMapView(view); map.setItemMeta(meta);
+            Block spot = air[col][height - 1 - row];
+            frames.add(world.spawn(spot.getLocation(), ItemFrame.class, entity -> {
+                entity.setFacingDirection(face, true); entity.setItem(map, false); entity.setVisible(false); entity.setFixed(true); entity.setItemDropChance(0f);
+            }));
         }
-
-        sender = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
-            for (Player p : world.getPlayers()) {
-                if (p.getLocation().distanceSquared(center) > 64 * 64) continue;
-                for (MapView v : views) p.sendMap(v);
+        mapSender = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
+            for (Player player : world.getPlayers()) {
+                if (player.getLocation().distanceSquared(center) <= 64 * 64) for (MapView view : views) player.sendMap(view);
             }
         }, 20L, 2L);
     }
 
-    private void logStream(Process p, String prefix) {
-        Thread t = new Thread(() -> {
-            try (BufferedReader er = new BufferedReader(
-                    new InputStreamReader(p.getErrorStream(), StandardCharsets.UTF_8))) {
-                String l;
-                while ((l = er.readLine()) != null) plugin.getLogger().warning(prefix + l);
-            } catch (IOException ignored) { }
-        });
-        t.setDaemon(true);
-        t.start();
+    public void play(String videoUrl) { synchronized (playbackLock) { url = videoUrl; paused = false; positionSeconds = 0; startedAtNanos = 0; startPlaybackLocked(); } }
+    public boolean pause() { synchronized (playbackLock) {
+        if (paused || !running) return false; positionSeconds = currentSecondsLocked(); paused = true; generation++; stopProcessesLocked(); return true;
+    } }
+    public boolean resume() { synchronized (playbackLock) {
+        if (!paused || !running) return false; paused = false; startedAtNanos = 0; startPlaybackLocked(); return true;
+    } }
+    public void seek(double seconds) { synchronized (playbackLock) {
+        positionSeconds = Math.max(0, seconds); generation++; stopProcessesLocked();
+        if (!paused && running) { startedAtNanos = 0; startPlaybackLocked(); }
+    } }
+    public boolean isPaused() { return paused; }
+    public double currentSeconds() { synchronized (playbackLock) { return currentSecondsLocked(); } }
+    public String formattedTime() { long seconds = (long) Math.floor(currentSeconds()); return String.format(Locale.ROOT, "%d:%02d", seconds / 60, seconds % 60); }
+    private double currentSecondsLocked() { return paused || !running || startedAtNanos == 0 ? positionSeconds : positionSeconds + (System.nanoTime() - startedAtNanos) / 1_000_000_000.0; }
+    private void startPlaybackLocked() { long token = ++generation; double offset = positionSeconds; Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> runPlayback(token, offset)); }
+    private boolean active(long token) { return running && !paused && generation == token; }
+
+    private void runPlayback(long token, double offset) {
+        try {
+            String stream = resolveStream(token); if (stream == null || !active(token)) return;
+            int fps = plugin.getConfig().getInt("fps", 10), sourceHeight = plugin.getConfig().getInt("source-height", 360);
+            int pixelWidth = width * TILE, pixelHeight = height * TILE; String ffmpeg = plugin.getConfig().getString("ffmpeg", "ffmpeg");
+            String filter = "fps=" + fps + ",scale=" + pixelWidth + ":" + pixelHeight + ":force_original_aspect_ratio=decrease,pad=" + pixelWidth + ":" + pixelHeight + ":(ow-iw)/2:(oh-ih)/2";
+            String seek = String.format(Locale.ROOT, "%.3f", offset);
+            Process video = new ProcessBuilder(ffmpeg, "-hide_banner", "-loglevel", "error", "-re", "-ss", seek, "-i", stream, "-vf", filter, "-an", "-f", "rawvideo", "-pix_fmt", "rgb24", "-").start();
+            synchronized (playbackLock) { if (!active(token)) { video.destroyForcibly(); return; } videoFfmpeg = video; }
+            logStream(video, "ffmpeg video: ");
+            AudioSink sink = createAudioSink(); if (sink != null) startAudio(token, seek, stream, ffmpeg, sink);
+            byte[] buffer = new byte[pixelWidth * pixelHeight * 3]; long framesRead = 0;
+            try (DataInputStream input = new DataInputStream(new BufferedInputStream(video.getInputStream(), 1 << 20))) {
+                while (active(token)) {
+                    input.readFully(buffer);
+                    if (framesRead++ == 0) {
+                        synchronized (playbackLock) { if (active(token)) startedAtNanos = System.nanoTime(); }
+                        plugin.getLogger().info("Pierwsza klatka odebrana - film leci.");
+                        if (sink != null) sink.release();
+                    }
+                    updateImage(buffer, pixelWidth, pixelHeight);
+                }
+            } catch (EOFException ignored) { }
+            finally { if (active(token)) plugin.getLogger().info("Koniec strumienia wideo, odebrano klatek: " + framesRead); }
+        } catch (Exception exception) { if (active(token)) plugin.getLogger().warning("Błąd odtwarzania: " + exception.getMessage()); }
     }
 
-    public void play(String url) {
-        int fps = plugin.getConfig().getInt("fps", 10);
-        int srcH = plugin.getConfig().getInt("source-height", 360);
-        String ytBin = plugin.getConfig().getString("ytdlp", "yt-dlp");
-        String ffBin = plugin.getConfig().getString("ffmpeg", "ffmpeg");
-        boolean pipe = plugin.getConfig().getBoolean("pipe-mode", true);
-        int W = w * T, H = h * T;
-
-        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
-            try {
-                String vf = "fps=" + fps + ",scale=" + W + ":" + H
-                        + ":force_original_aspect_ratio=decrease,pad=" + W + ":" + H + ":(ow-iw)/2:(oh-ih)/2";
-                List<String> cmd = new ArrayList<>(List.of(ffBin, "-hide_banner", "-loglevel", "error"));
-                Process ytp = null;
-
-                if (pipe) {
-                    String fmt = "bv*[height<=" + srcH + "][ext=webm]/b[height<=" + srcH + "]/bv*[height<=" + srcH + "]/b";
-                    ProcessBuilder ypb = new ProcessBuilder(ytBin, "--no-playlist", "-q", "--no-warnings",
-                            "-f", fmt, "-o", "-", url);
-                    ypb.environment().put("TMPDIR", ((TikitiPlugin) plugin).tmpDir().getAbsolutePath());
-                    ytp = ypb.start();
-                    yt = ytp;
-                    logStream(ytp, "yt-dlp: ");
-                    cmd.addAll(List.of("-re", "-i", "pipe:0"));
-                    plugin.getLogger().info("Tryb rury: yt-dlp -> ffmpeg, startuje ffmpeg...");
-                } else {
-                    yt = new ProcessBuilder(ytBin, "--no-playlist", "--no-warnings", "-g",
-                            "-f", "bv*[height<=" + srcH + "]/b[height<=" + srcH + "]/b", url)
-                            .redirectErrorStream(true).start();
-                    String stream = null;
-                    List<String> out = new ArrayList<>();
-                    try (BufferedReader br = new BufferedReader(
-                            new InputStreamReader(yt.getInputStream(), StandardCharsets.UTF_8))) {
-                        String line;
-                        while ((line = br.readLine()) != null) {
-                            out.add(line);
-                            if (stream == null && line.startsWith("http")) stream = line;
-                        }
-                    }
-                    if (stream == null) {
-                        plugin.getLogger().warning("yt-dlp nie zwrocil linku. Odpowiedz yt-dlp:");
-                        for (String l : out) plugin.getLogger().warning("  " + l);
-                        return;
-                    }
-                    cmd.add("-nostdin");
-                    cmd.addAll(List.of("-re", "-i", stream));
-                    plugin.getLogger().info("yt-dlp OK, startuje ffmpeg...");
-                }
-                cmd.addAll(List.of("-vf", vf, "-f", "rawvideo", "-pix_fmt", "rgb24", "-an", "-"));
-
-                final Process ffp = new ProcessBuilder(cmd).start();
-                ff = ffp;
-                logStream(ffp, "ffmpeg: ");
-
-                if (ytp != null) {
-                    final Process src = ytp;
-                    Thread copier = new Thread(() -> {
-                        try (InputStream i = src.getInputStream(); OutputStream o = ffp.getOutputStream()) {
-                            byte[] b = new byte[65536];
-                            int n;
-                            while (running && (n = i.read(b)) != -1) o.write(b, 0, n);
-                        } catch (IOException ignored) { }
-                    });
-                    copier.setDaemon(true);
-                    copier.start();
-                }
-
-                byte[] buf = new byte[W * H * 3];
-                long frames = 0;
-                try (DataInputStream in = new DataInputStream(new BufferedInputStream(ffp.getInputStream(), 1 << 20))) {
-                    while (running) {
-                        in.readFully(buf);
-                        if (frames++ == 0) plugin.getLogger().info("Pierwsza klatka odebrana - film leci.");
-                        BufferedImage img = new BufferedImage(W, H, BufferedImage.TYPE_INT_RGB);
-                        int[] px = ((DataBufferInt) img.getRaster().getDataBuffer()).getData();
-                        for (int i = 0, j = 0; i < px.length; i++, j += 3)
-                            px[i] = ((buf[j] & 0xFF) << 16) | ((buf[j + 1] & 0xFF) << 8) | (buf[j + 2] & 0xFF);
-                        for (int row = 0; row < h; row++) for (int c = 0; c < w; c++)
-                            tiles[row * w + c].img = img.getSubimage(c * T, row * T, T, T);
-                    }
-                } finally {
-                    try { ffp.waitFor(3, java.util.concurrent.TimeUnit.SECONDS); } catch (InterruptedException ignored) { }
-                    if (running && !ffp.isAlive())
-                        plugin.getLogger().info("ffmpeg kod wyjscia: " + ffp.exitValue()
-                                + " (137=zabity/limit pamieci, 126/127=nie da sie uruchomic, 132/139=awaria)");
-                    if (running) plugin.getLogger().info("Koniec strumienia ffmpeg, odebrano klatek: " + frames);
-                }
-            } catch (EOFException ignored) {
-                // koniec strumienia - opisany wyzej
-            } catch (Exception e) {
-                if (running) plugin.getLogger().warning("Blad odtwarzania: " + e);
-            }
-        });
+    private String resolveStream(long token) throws IOException, InterruptedException {
+        String ytDlp = plugin.getConfig().getString("ytdlp", "yt-dlp"); int sourceHeight = plugin.getConfig().getInt("source-height", 360);
+        Process resolver = new ProcessBuilder(ytDlp, "--no-playlist", "--no-warnings", "-g", "-f", "b[height<=" + sourceHeight + "]/b", url).redirectErrorStream(true).start();
+        yt = resolver; String stream = null;
+        try (BufferedReader output = new BufferedReader(new InputStreamReader(resolver.getInputStream(), StandardCharsets.UTF_8))) {
+            String line; while ((line = output.readLine()) != null) if (stream == null && line.startsWith("http")) stream = line;
+        }
+        resolver.waitFor(); if (!active(token)) return null;
+        if (stream == null) throw new IOException("yt-dlp nie zwrócił adresu strumienia"); return stream;
     }
 
-    public void stop() {
-        running = false;
-        if (yt != null) yt.destroy();
-        if (ff != null) ff.destroyForcibly();
-        if (sender != null) sender.cancel();
-        frames.forEach(ItemFrame::remove);
-        frames.clear();
+    private AudioSink createAudioSink() {
+        if (VoiceBridge.api == null) return null;
+        try { AudioSink sink = new ScreenAudio(center, (float) plugin.getConfig().getDouble("audio-distance", 20.0)); synchronized (playbackLock) { audio = sink; } return sink; }
+        catch (Exception exception) { plugin.getLogger().warning("Dźwięk Simple Voice Chat niedostępny: " + exception.getMessage()); return null; }
     }
+    private void startAudio(long token, String seek, String stream, String ffmpeg, AudioSink sink) throws IOException {
+        Process process = new ProcessBuilder(ffmpeg, "-hide_banner", "-loglevel", "error", "-re", "-ss", seek, "-i", stream, "-vn", "-ac", "1", "-ar", "48000", "-f", "s16le", "-").start();
+        synchronized (playbackLock) { if (!active(token)) { process.destroyForcibly(); sink.stop(); return; } audioFfmpeg = process; }
+        logStream(process, "ffmpeg audio: ");
+        Thread reader = new Thread(() -> { try { sink.feed(process.getInputStream(), () -> active(token)); } catch (IOException exception) { if (active(token)) plugin.getLogger().warning("Błąd audio: " + exception.getMessage()); } }, "Tikiti-audio");
+        reader.setDaemon(true); reader.start();
+    }
+    private void updateImage(byte[] rgb, int pixelWidth, int pixelHeight) {
+        BufferedImage image = new BufferedImage(pixelWidth, pixelHeight, BufferedImage.TYPE_INT_RGB); int[] pixels = ((DataBufferInt) image.getRaster().getDataBuffer()).getData();
+        for (int pixel = 0, byteIndex = 0; pixel < pixels.length; pixel++, byteIndex += 3) pixels[pixel] = ((rgb[byteIndex] & 0xFF) << 16) | ((rgb[byteIndex + 1] & 0xFF) << 8) | (rgb[byteIndex + 2] & 0xFF);
+        for (int row = 0; row < height; row++) for (int col = 0; col < width; col++) tiles[row * width + col].image = image.getSubimage(col * TILE, row * TILE, TILE, TILE);
+    }
+    private void logStream(Process process, String prefix) { Thread logger = new Thread(() -> {
+        try (BufferedReader errors = new BufferedReader(new InputStreamReader(process.getErrorStream(), StandardCharsets.UTF_8))) { String line; while ((line = errors.readLine()) != null) plugin.getLogger().warning(prefix + line); } catch (IOException ignored) { }
+    }, "Tikiti-log"); logger.setDaemon(true); logger.start(); }
+    private void stopProcessesLocked() {
+        if (yt != null) yt.destroyForcibly(); if (videoFfmpeg != null) videoFfmpeg.destroyForcibly(); if (audioFfmpeg != null) audioFfmpeg.destroyForcibly();
+        if (audio != null) { audio.stop(); audio = null; } yt = videoFfmpeg = audioFfmpeg = null;
+    }
+    public void stop() { synchronized (playbackLock) { if (!running) return; positionSeconds = currentSecondsLocked(); running = false; generation++; stopProcessesLocked(); } if (mapSender != null) mapSender.cancel(); frames.forEach(ItemFrame::remove); frames.clear(); }
 }
