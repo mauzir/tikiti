@@ -17,17 +17,32 @@ public class TikitiPlugin extends JavaPlugin implements CommandExecutor {
 
     @Override
     public void onEnable() {
-saveDefaultConfig();
-for (String key : new String[]{"ytdlp", "ffmpeg"}) {
-    java.io.File f = new java.io.File(getConfig().getString(key, key));
-    if (f.isFile()) {
-        boolean ok = f.setExecutable(true, false);
-        getLogger().info(key + ": " + f.getPath() + " wykonywalny=" + f.canExecute() + " (set=" + ok + ")");
-    } else {
-        getLogger().info(key + ": nie znaleziono pliku " + f.getPath() + " (uzywam z systemu)");
-    }
-}
-getCommand("tikiti").setExecutor(this);
+        saveDefaultConfig();
+        for (String key : new String[]{"ytdlp", "ffmpeg"}) {
+            java.io.File f = new java.io.File(getConfig().getString(key, key));
+            if (f.isFile()) {
+                boolean ok = f.setExecutable(true, false);
+                getLogger().info(key + ": " + f.getPath() + " wykonywalny=" + f.canExecute() + " (set=" + ok + ")");
+            } else {
+                getLogger().info(key + ": nie znaleziono pliku " + f.getPath() + " (uzywam z systemu)");
+            }
+        }
+        org.bukkit.Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
+            try {
+                Process pr = new ProcessBuilder(getConfig().getString("ffmpeg", "ffmpeg"), "-version")
+                        .redirectErrorStream(true).start();
+                String first;
+                try (java.io.BufferedReader br = new java.io.BufferedReader(
+                        new java.io.InputStreamReader(pr.getInputStream()))) {
+                    first = br.readLine();
+                }
+                int code = pr.waitFor();
+                getLogger().info("Test ffmpeg -version: kod=" + code + " " + first);
+            } catch (Exception e) {
+                getLogger().warning("Test ffmpeg nieudany: " + e);
+            }
+        });
+        getCommand("tikiti").setExecutor(this);
     }
 
     @Override
