@@ -122,7 +122,11 @@ public final class Screen {
         String ytDlp = plugin.getConfig().getString("ytdlp", "yt-dlp"); int sourceHeight = plugin.getConfig().getInt("source-height", 360);
         // YouTube commonly provides video and audio as separate DASH streams. With -g yt-dlp prints
         // two URLs for the first choice; if a combined format exists, it prints just one URL.
-        String format = "bv*[height<=" + sourceHeight + "]+ba/b[height<=" + sourceHeight + "]/bv*+ba/b";
+        // Prefer H.264: many server ffmpeg builds are unstable when decoding YouTube AV1 streams.
+        // The final choices retain a fallback for videos where H.264 is not available.
+        String format = "bv*[height<=" + sourceHeight + "][vcodec^=avc1]+ba/"
+                + "b[height<=" + sourceHeight + "][vcodec^=avc1]/"
+                + "bv*[height<=" + sourceHeight + "]+ba/b[height<=" + sourceHeight + "]/bv*+ba/b";
         Process resolver = new ProcessBuilder(ytDlp, "--no-playlist", "--no-warnings", "-g", "-f", format, url).redirectErrorStream(true).start();
         yt = resolver; List<String> streams = new ArrayList<>(); List<String> outputLines = new ArrayList<>();
         try (BufferedReader output = new BufferedReader(new InputStreamReader(resolver.getInputStream(), StandardCharsets.UTF_8))) {
