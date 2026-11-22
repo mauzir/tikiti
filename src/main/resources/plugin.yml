@@ -2,6 +2,7 @@ name: Tikiti
 version: 1.0
 main: pl.tikiti.TikitiPlugin
 api-version: '26.1'
+softdepend: [voicechat]
 commands:
   tikiti:
     description: Stawia telewizor z filmem z YouTube
