@@ -19,6 +19,7 @@ import java.util.*;
 
 public final class Screen {
     private static final int TILE = 128;
+    private static final String YOUTUBE_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36";
     static final class Tile extends MapRenderer {
         volatile BufferedImage image = new BufferedImage(TILE, TILE, BufferedImage.TYPE_INT_RGB);
         Tile() { super(false); }
@@ -88,7 +89,9 @@ public final class Screen {
             int pixelWidth = width * TILE, pixelHeight = height * TILE; String ffmpeg = plugin.getConfig().getString("ffmpeg", "ffmpeg");
             String filter = "fps=" + fps + ",scale=" + pixelWidth + ":" + pixelHeight + ":force_original_aspect_ratio=decrease,pad=" + pixelWidth + ":" + pixelHeight + ":(ow-iw)/2:(oh-ih)/2";
             String seek = String.format(Locale.ROOT, "%.3f", offset);
-            Process video = new ProcessBuilder(ffmpeg, "-hide_banner", "-loglevel", "error", "-re", "-ss", seek, "-i", streams.videoUrl(), "-vf", filter, "-an", "-f", "rawvideo", "-pix_fmt", "rgb24", "-").start();
+            Process video = new ProcessBuilder(ffmpeg, "-hide_banner", "-loglevel", "error", "-re", "-ss", seek,
+                    "-user_agent", YOUTUBE_USER_AGENT, "-referer", "https://www.youtube.com/", "-i", streams.videoUrl(),
+                    "-vf", filter, "-an", "-f", "rawvideo", "-pix_fmt", "rgb24", "-").start();
             synchronized (playbackLock) { if (!active(token)) { video.destroyForcibly(); return; } videoFfmpeg = video; }
             logStream(video, "ffmpeg video: ");
             AudioSink sink = createAudioSink(); if (sink != null) startAudio(token, seek, streams.audioUrl(), ffmpeg, sink);
@@ -104,7 +107,12 @@ public final class Screen {
                     updateImage(buffer, pixelWidth, pixelHeight);
                 }
             } catch (EOFException ignored) { }
-            finally { if (active(token)) plugin.getLogger().info("Koniec strumienia wideo, odebrano klatek: " + framesRead); }
+            finally {
+                if (active(token)) {
+                    try { video.waitFor(); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
+                    plugin.getLogger().info("Koniec strumienia wideo, odebrano klatek: " + framesRead + ", kod ffmpeg: " + video.exitValue());
+                }
+            }
         } catch (Exception exception) { if (active(token)) plugin.getLogger().warning("Błąd odtwarzania: " + exception.getMessage()); }
     }
 
@@ -137,7 +145,9 @@ public final class Screen {
         catch (Exception exception) { plugin.getLogger().warning("Dźwięk Simple Voice Chat niedostępny: " + exception.getMessage()); return null; }
     }
     private void startAudio(long token, String seek, String stream, String ffmpeg, AudioSink sink) throws IOException {
-        Process process = new ProcessBuilder(ffmpeg, "-hide_banner", "-loglevel", "error", "-re", "-ss", seek, "-i", stream, "-vn", "-ac", "1", "-ar", "48000", "-f", "s16le", "-").start();
+        Process process = new ProcessBuilder(ffmpeg, "-hide_banner", "-loglevel", "error", "-re", "-ss", seek,
+                "-user_agent", YOUTUBE_USER_AGENT, "-referer", "https://www.youtube.com/", "-i", stream,
+                "-vn", "-ac", "1", "-ar", "48000", "-f", "s16le", "-").start();
         synchronized (playbackLock) { if (!active(token)) { process.destroyForcibly(); sink.stop(); return; } audioFfmpeg = process; }
         logStream(process, "ffmpeg audio: ");
         Thread reader = new Thread(() -> { try { sink.feed(process.getInputStream(), () -> active(token)); } catch (IOException exception) { if (active(token)) plugin.getLogger().warning("Błąd audio: " + exception.getMessage()); } }, "Tikiti-audio");
