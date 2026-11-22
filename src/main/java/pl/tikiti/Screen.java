@@ -44,8 +44,8 @@ public class Screen {
         this.tiles = new Tile[w * h];
 
         // "w prawo" z perspektywy patrzącego na ścianę
-        int dx = -face.getOppositeFace().getModeZ();
-        int dz = face.getOppositeFace().getModeX();
+        int dx = -face.getOppositeFace().getModZ();
+        int dz = face.getOppositeFace().getModX();
         int left = (w - 1) / 2;
 
         // sprawdź miejsce
