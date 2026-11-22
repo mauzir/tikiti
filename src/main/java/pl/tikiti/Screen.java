@@ -116,16 +116,29 @@ public class Screen {
                     for (String l : out) plugin.getLogger().warning("  " + l);
                     return;
                 }
-                ff = new ProcessBuilder(ffBin, "-loglevel", "quiet", "-re", "-i", stream,
+                plugin.getLogger().info("yt-dlp OK, startuje ffmpeg...");
+                ff = new ProcessBuilder(ffBin, "-hide_banner", "-loglevel", "error", "-re", "-i", stream,
                         "-vf", "fps=" + fps + ",scale=" + W + ":" + H
                                 + ":force_original_aspect_ratio=decrease,pad=" + W + ":" + H + ":(ow-iw)/2:(oh-ih)/2",
                         "-f", "rawvideo", "-pix_fmt", "rgb24", "-an", "-")
-                        .redirectError(ProcessBuilder.Redirect.DISCARD).start();
+                        .start();
+                final Process ffp = ff;
+                Thread errT = new Thread(() -> {
+                    try (BufferedReader er = new BufferedReader(
+                            new InputStreamReader(ffp.getErrorStream(), StandardCharsets.UTF_8))) {
+                        String l;
+                        while ((l = er.readLine()) != null) plugin.getLogger().warning("ffmpeg: " + l);
+                    } catch (IOException ignored) { }
+                });
+                errT.setDaemon(true);
+                errT.start();
 
                 byte[] buf = new byte[W * H * 3];
+                long frames = 0;
                 try (DataInputStream in = new DataInputStream(new BufferedInputStream(ff.getInputStream(), 1 << 20))) {
                     while (running) {
                         in.readFully(buf);
+                        if (frames++ == 0) plugin.getLogger().info("Pierwsza klatka odebrana - film leci.");
                         BufferedImage img = new BufferedImage(W, H, BufferedImage.TYPE_INT_RGB);
                         int[] px = ((DataBufferInt) img.getRaster().getDataBuffer()).getData();
                         for (int i = 0, j = 0; i < px.length; i++, j += 3)
@@ -133,9 +146,12 @@ public class Screen {
                         for (int row = 0; row < h; row++) for (int c = 0; c < w; c++)
                             tiles[row * w + c].img = img.getSubimage(c * T, row * T, T, T);
                     }
+                } finally {
+                    if (running) plugin.getLogger().info("Koniec strumienia ffmpeg, odebrano klatek: " + frames
+                            + (frames == 0 ? " (ffmpeg nic nie zwrocil - patrz linijki 'ffmpeg:' wyzej)" : ""));
                 }
             } catch (EOFException ignored) {
-                // film sie skonczyl
+                // koniec strumienia - opisany wyzej
             } catch (Exception e) {
                 if (running) plugin.getLogger().warning("Blad odtwarzania: " + e);
             }
