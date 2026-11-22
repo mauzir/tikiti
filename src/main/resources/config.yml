@@ -1,0 +1,7 @@
+ytdlp: yt-dlp
+ffmpeg: ffmpeg
+fps: 10
+max-width: 10
+max-height: 6
+# jakosc zrodla (px wysokosci) - nizej = mniejsze obciazenie
+source-height: 360

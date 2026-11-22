@@ -1,0 +1,75 @@
+package pl.tikiti;
+
+import org.bukkit.block.Block;
+import org.bukkit.block.BlockFace;
+import org.bukkit.command.*;
+import org.bukkit.entity.Player;
+import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.util.RayTraceResult;
+
+import java.util.*;
+import java.util.regex.Pattern;
+
+public class TikitiPlugin extends JavaPlugin implements CommandExecutor {
+    private static final Pattern YT = Pattern.compile(
+            "^https://(www\\.|m\\.)?(youtube\\.com/watch\\?v=|youtu\\.be/)[\\w-]+.*$");
+    private final Map<UUID, Screen> screens = new HashMap<>();
+
+    @Override
+    public void onEnable() {
+        saveDefaultConfig();
+        getCommand("tikiti").setExecutor(this);
+    }
+
+    @Override
+    public void onDisable() {
+        screens.values().forEach(Screen::stop);
+        screens.clear();
+    }
+
+    @Override
+    public boolean onCommand(CommandSender s, Command c, String l, String[] a) {
+        if (!(s instanceof Player p)) { s.sendMessage("Tylko dla graczy."); return true; }
+        if (!p.hasPermission("tikiti.use")) { p.sendMessage("§cBrak uprawnień."); return true; }
+        if (a.length == 0) { p.sendMessage("§eUżycie: /tikiti <link|stop> [szer] [wys]"); return true; }
+
+        if (a[0].equalsIgnoreCase("stop")) {
+            Screen old = screens.remove(p.getUniqueId());
+            p.sendMessage(old != null ? "§aTelewizor wyłączony." : "§cNie masz włączonego telewizora.");
+            if (old != null) old.stop();
+            return true;
+        }
+        if (!YT.matcher(a[0]).matches()) { p.sendMessage("§cPodaj poprawny link do YouTube."); return true; }
+
+        int w = 5, h = 3;
+        try {
+            if (a.length > 1) w = Integer.parseInt(a[1]);
+            if (a.length > 2) h = Integer.parseInt(a[2]);
+        } catch (NumberFormatException e) { p.sendMessage("§cRozmiar musi być liczbą."); return true; }
+        w = Math.max(1, Math.min(w, getConfig().getInt("max-width", 10)));
+        h = Math.max(1, Math.min(h, getConfig().getInt("max-height", 6)));
+
+        RayTraceResult r = p.rayTraceBlocks(8);
+        if (r == null || r.getHitBlock() == null || r.getHitBlockFace() == null) {
+            p.sendMessage("§cPatrz na ścianę (do 8 bloków) - to będzie dolny środek ekranu."); return true;
+        }
+        Block wall = r.getHitBlock();
+        BlockFace face = r.getHitBlockFace();
+        if (face == BlockFace.UP || face == BlockFace.DOWN) {
+            p.sendMessage("§cPatrz na pionową ścianę, nie podłogę/sufit."); return true;
+        }
+
+        Screen old = screens.remove(p.getUniqueId());
+        if (old != null) old.stop();
+
+        try {
+            Screen sc = new Screen(this, wall, face, w, h);
+            screens.put(p.getUniqueId(), sc);
+            sc.play(a[0]);
+            p.sendMessage("§aStawiam telewizor " + w + "x" + h + ", ładowanie filmu (kilka sekund)...");
+        } catch (IllegalStateException e) {
+            p.sendMessage("§c" + e.getMessage());
+        }
+        return true;
+    }
+}

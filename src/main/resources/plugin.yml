@@ -1,0 +1,11 @@
+name: Tikiti
+version: 1.0
+main: pl.tikiti.TikitiPlugin
+api-version: '26.1'
+commands:
+  tikiti:
+    description: Stawia telewizor z filmem z YouTube
+    usage: /tikiti <link|stop> [szerokosc] [wysokosc]
+permissions:
+  tikiti.use:
+    default: op
