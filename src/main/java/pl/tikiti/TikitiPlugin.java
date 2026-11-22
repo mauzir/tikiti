@@ -17,8 +17,17 @@ public class TikitiPlugin extends JavaPlugin implements CommandExecutor {
 
     @Override
     public void onEnable() {
-        saveDefaultConfig();
-        getCommand("tikiti").setExecutor(this);
+saveDefaultConfig();
+for (String key : new String[]{"ytdlp", "ffmpeg"}) {
+    java.io.File f = new java.io.File(getConfig().getString(key, key));
+    if (f.isFile()) {
+        boolean ok = f.setExecutable(true, false);
+        getLogger().info(key + ": " + f.getPath() + " wykonywalny=" + f.canExecute() + " (set=" + ok + ")");
+    } else {
+        getLogger().info(key + ": nie znaleziono pliku " + f.getPath() + " (uzywam z systemu)");
+    }
+}
+getCommand("tikiti").setExecutor(this);
     }
 
     @Override
