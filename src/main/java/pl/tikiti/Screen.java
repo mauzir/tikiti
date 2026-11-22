@@ -91,14 +91,16 @@ public final class Screen {
             int pixelWidth = width * TILE, pixelHeight = height * TILE; String ffmpeg = plugin.getConfig().getString("ffmpeg", "ffmpeg"), ytDlp = plugin.getConfig().getString("ytdlp", "yt-dlp");
             String filter = "fps=" + fps + ",scale=" + pixelWidth + ":" + pixelHeight + ":force_original_aspect_ratio=decrease,pad=" + pixelWidth + ":" + pixelHeight + ":(ow-iw)/2:(oh-ih)/2";
             String videoFormat = "bv*[height<=" + sourceHeight + "][ext=webm]/b[height<=" + sourceHeight + "]/bv*[height<=" + sourceHeight + "]/b";
+            String audioUrl = resolveAudioUrl(ytDlp);
             Process source = startYtPipe(ytDlp, videoFormat, offset);
             yt = source; logStream(source, "yt-dlp video: ");
-            AudioSink sink = createAudioSink();
+            AudioSink sink = audioUrl == null ? null : createAudioSink();
             ServerSocket server = sink == null ? null : new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
             if (server != null) audioServer = server;
             List<String> ffmpegCommand = new ArrayList<>(List.of(ffmpeg, "-hide_banner", "-loglevel", "error", "-re", "-i", "pipe:0",
                     "-map", "0:v:0", "-vf", filter, "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"));
-            if (server != null) ffmpegCommand.addAll(List.of("-map", "0:a:0?", "-vn", "-ac", "1", "-ar", "48000", "-f", "s16le",
+            if (server != null) ffmpegCommand.addAll(List.of("-re", "-user_agent", YOUTUBE_USER_AGENT, "-referer", "https://www.youtube.com/", "-i", audioUrl,
+                    "-map", "1:a:0", "-vn", "-ac", "1", "-ar", "48000", "-f", "s16le",
                     "tcp://127.0.0.1:" + server.getLocalPort()));
             Process video = new ProcessBuilder(ffmpegCommand).start();
             synchronized (playbackLock) { if (!active(token)) { video.destroyForcibly(); return; } videoFfmpeg = video; }
@@ -130,6 +132,17 @@ public final class Screen {
         if (VoiceBridge.api == null) return null;
         try { AudioSink sink = new ScreenAudio(center, (float) plugin.getConfig().getDouble("audio-distance", 20.0)); synchronized (playbackLock) { audio = sink; } return sink; }
         catch (Exception exception) { plugin.getLogger().warning("Dźwięk Simple Voice Chat niedostępny: " + exception.getMessage()); return null; }
+    }
+    private String resolveAudioUrl(String ytDlp) throws IOException, InterruptedException {
+        Process resolver = new ProcessBuilder(ytDlp, "--no-playlist", "-q", "--no-warnings", "-g", "-f", "ba/b", url).redirectErrorStream(true).start();
+        List<String> lines = new ArrayList<>();
+        try (BufferedReader output = new BufferedReader(new InputStreamReader(resolver.getInputStream(), StandardCharsets.UTF_8))) {
+            String line; while ((line = output.readLine()) != null) lines.add(line);
+        }
+        resolver.waitFor();
+        for (String line : lines) if (line.startsWith("http")) return line;
+        plugin.getLogger().warning("Nie udało się pobrać adresu audio z yt-dlp: " + String.join(" | ", lines));
+        return null;
     }
     private Process startYtPipe(String ytDlp, String format, double offset) throws IOException {
         List<String> command = new ArrayList<>(List.of(ytDlp, "--no-playlist", "-q", "--no-warnings"));
