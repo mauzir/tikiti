@@ -92,7 +92,7 @@ public final class Screen {
             int pixelWidth = width * TILE, pixelHeight = height * TILE; String ffmpeg = plugin.getConfig().getString("ffmpeg", "ffmpeg"), ytDlp = plugin.getConfig().getString("ytdlp", "yt-dlp");
             String filter = "fps=" + fps + ",scale=" + pixelWidth + ":" + pixelHeight + ":force_original_aspect_ratio=decrease,pad=" + pixelWidth + ":" + pixelHeight + ":(ow-iw)/2:(oh-ih)/2";
             String videoFormat = "bv*[height<=" + sourceHeight + "][ext=webm]/b[height<=" + sourceHeight + "]/bv*[height<=" + sourceHeight + "]/b";
-            Process source = startYtPipe(ytDlp, videoFormat, offset);
+            Process source = startYtPipe(ytDlp, ffmpeg, videoFormat, offset);
             yt = source; logStream(source, "yt-dlp video: ");
             AudioSink sink = null;
             ServerSocket server = sink == null ? null : new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
@@ -145,8 +145,10 @@ public final class Screen {
         plugin.getLogger().warning("Nie udało się pobrać adresu audio z yt-dlp: " + String.join(" | ", lines));
         return null;
     }
-    private Process startYtPipe(String ytDlp, String format, double offset) throws IOException {
+    private Process startYtPipe(String ytDlp, String ffmpeg, String format, double offset) throws IOException {
         List<String> command = new ArrayList<>(List.of(ytDlp, "--no-playlist", "-q", "--no-warnings"));
+        File ffmpegFile = new File(ffmpeg);
+        if (ffmpegFile.isFile()) command.addAll(List.of("--ffmpeg-location", ffmpegFile.getAbsolutePath()));
         // yt-dlp cuts the source before it reaches ffmpeg, so seeking remains compatible with pipe mode.
         if (offset >= 0.5) command.addAll(List.of("--download-sections", "*" + String.format(Locale.ROOT, "%.3f", offset) + "-inf"));
         command.addAll(List.of("-f", format, "-o", "-", url));
@@ -171,7 +173,7 @@ public final class Screen {
         receiver.setDaemon(true); receiver.start();
     }
     private void startAudio(long token, String ytDlp, String ffmpeg, double offset, AudioSink sink) throws IOException {
-        Process source = startYtPipe(ytDlp, "ba/b", offset);
+        Process source = startYtPipe(ytDlp, ffmpeg, "ba/b", offset);
         audioYt = source; logStream(source, "yt-dlp audio: ");
         Process process = new ProcessBuilder(ffmpeg, "-hide_banner", "-loglevel", "error", "-re", "-i", "pipe:0", "-vn", "-ac", "1", "-ar", "48000", "-f", "s16le", "-").start();
         synchronized (playbackLock) { if (!active(token)) { process.destroyForcibly(); sink.stop(); return; } audioFfmpeg = process; }
