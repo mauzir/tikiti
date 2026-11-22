@@ -14,6 +14,9 @@ import org.bukkit.scheduler.BukkitTask;
 import java.awt.image.BufferedImage;
 import java.awt.image.DataBufferInt;
 import java.io.*;
+import java.net.InetAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 
@@ -32,7 +35,7 @@ public final class Screen {
     private final Object playbackLock = new Object();
     private volatile boolean running = true, paused; private volatile long generation;
     private volatile double positionSeconds; private volatile long startedAtNanos;
-    private volatile Process yt, audioYt, videoFfmpeg, audioFfmpeg; private volatile AudioSink audio;
+    private volatile Process yt, audioYt, videoFfmpeg, audioFfmpeg; private volatile AudioSink audio; private volatile ServerSocket audioServer;
     private BukkitTask mapSender; private String url;
 
     public Screen(Plugin plugin, Block wall, BlockFace face, int width, int height) {
@@ -90,14 +93,18 @@ public final class Screen {
             String videoFormat = "bv*[height<=" + sourceHeight + "][ext=webm]/b[height<=" + sourceHeight + "]/bv*[height<=" + sourceHeight + "]/b";
             Process source = startYtPipe(ytDlp, videoFormat, offset);
             yt = source; logStream(source, "yt-dlp video: ");
-            Process video = new ProcessBuilder(ffmpeg, "-hide_banner", "-loglevel", "error", "-re", "-i", "pipe:0", "-vf", filter, "-an", "-f", "rawvideo", "-pix_fmt", "rgb24", "-").start();
+            AudioSink sink = createAudioSink();
+            ServerSocket server = sink == null ? null : new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+            if (server != null) audioServer = server;
+            List<String> ffmpegCommand = new ArrayList<>(List.of(ffmpeg, "-hide_banner", "-loglevel", "error", "-re", "-i", "pipe:0",
+                    "-map", "0:v:0", "-vf", filter, "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"));
+            if (server != null) ffmpegCommand.addAll(List.of("-map", "0:a:0?", "-vn", "-ac", "1", "-ar", "48000", "-f", "s16le",
+                    "tcp://127.0.0.1:" + server.getLocalPort()));
+            Process video = new ProcessBuilder(ffmpegCommand).start();
             synchronized (playbackLock) { if (!active(token)) { video.destroyForcibly(); return; } videoFfmpeg = video; }
             logStream(video, "ffmpeg video: ");
             pipe(source, video, token, "Tikiti-video-pipe");
-            // The server's bundled PyInstaller yt-dlp crashes when two copies extract at once.
-            // Keep video on the proven single-process pipeline; audio is enabled only after a
-            // dedicated one-process muxing path is available.
-            AudioSink sink = null;
+            if (server != null) receiveAudio(server, sink, token);
             byte[] buffer = new byte[pixelWidth * pixelHeight * 3]; long framesRead = 0;
             try (DataInputStream input = new DataInputStream(new BufferedInputStream(video.getInputStream(), 1 << 20))) {
                 while (active(token)) {
@@ -131,6 +138,16 @@ public final class Screen {
         command.addAll(List.of("-f", format, "-o", "-", url));
         return new ProcessBuilder(command).start();
     }
+    private void receiveAudio(ServerSocket server, AudioSink sink, long token) {
+        Thread receiver = new Thread(() -> {
+            try (ServerSocket listener = server; Socket socket = listener.accept()) {
+                sink.feed(socket.getInputStream(), () -> active(token));
+            } catch (IOException exception) {
+                if (active(token)) plugin.getLogger().warning("Błąd odbioru dźwięku: " + exception.getMessage());
+            }
+        }, "Tikiti-audio");
+        receiver.setDaemon(true); receiver.start();
+    }
     private void startAudio(long token, String ytDlp, String ffmpeg, double offset, AudioSink sink) throws IOException {
         Process source = startYtPipe(ytDlp, "ba/b", offset);
         audioYt = source; logStream(source, "yt-dlp audio: ");
@@ -159,8 +176,14 @@ public final class Screen {
         try (BufferedReader errors = new BufferedReader(new InputStreamReader(process.getErrorStream(), StandardCharsets.UTF_8))) { String line; while ((line = errors.readLine()) != null) plugin.getLogger().warning(prefix + line); } catch (IOException ignored) { }
     }, "Tikiti-log"); logger.setDaemon(true); logger.start(); }
     private void stopProcessesLocked() {
-        if (yt != null) yt.destroyForcibly(); if (audioYt != null) audioYt.destroyForcibly(); if (videoFfmpeg != null) videoFfmpeg.destroyForcibly(); if (audioFfmpeg != null) audioFfmpeg.destroyForcibly();
-        if (audio != null) { audio.stop(); audio = null; } yt = audioYt = videoFfmpeg = audioFfmpeg = null;
+        terminate(yt); terminate(audioYt); terminate(videoFfmpeg); terminate(audioFfmpeg);
+        if (audioServer != null) try { audioServer.close(); } catch (IOException ignored) { }
+        if (audio != null) { audio.stop(); audio = null; } yt = audioYt = videoFfmpeg = audioFfmpeg = null; audioServer = null;
+    }
+    private static void terminate(Process process) {
+        if (process == null) return;
+        process.destroyForcibly();
+        try { process.waitFor(3, java.util.concurrent.TimeUnit.SECONDS); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
     }
     public void stop() { synchronized (playbackLock) { if (!running) return; positionSeconds = currentSecondsLocked(); running = false; generation++; stopProcessesLocked(); } if (mapSender != null) mapSender.cancel(); frames.forEach(ItemFrame::remove); frames.clear(); }
 }
