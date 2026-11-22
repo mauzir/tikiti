@@ -6,7 +6,7 @@ softdepend: [voicechat]
 commands:
   tikiti:
     description: Stawia telewizor z filmem z YouTube
-    usage: /tikiti <link|stop> [szerokosc] [wysokosc]
+    usage: /tikiti <link|stop|pause|resume|seek|time> [argument]
 permissions:
   tikiti.use:
     default: op
