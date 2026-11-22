@@ -32,7 +32,7 @@ public final class Screen {
     private final Object playbackLock = new Object();
     private volatile boolean running = true, paused; private volatile long generation;
     private volatile double positionSeconds; private volatile long startedAtNanos;
-    private volatile Process yt, videoFfmpeg, audioFfmpeg; private volatile AudioSink audio;
+    private volatile Process yt, audioYt, videoFfmpeg, audioFfmpeg; private volatile AudioSink audio;
     private BukkitTask mapSender; private String url;
 
     public Screen(Plugin plugin, Block wall, BlockFace face, int width, int height) {
@@ -84,17 +84,17 @@ public final class Screen {
 
     private void runPlayback(long token, double offset) {
         try {
-            StreamSources streams = resolveStream(token); if (streams == null || !active(token)) return;
             int fps = plugin.getConfig().getInt("fps", 10), sourceHeight = plugin.getConfig().getInt("source-height", 360);
-            int pixelWidth = width * TILE, pixelHeight = height * TILE; String ffmpeg = plugin.getConfig().getString("ffmpeg", "ffmpeg");
+            int pixelWidth = width * TILE, pixelHeight = height * TILE; String ffmpeg = plugin.getConfig().getString("ffmpeg", "ffmpeg"), ytDlp = plugin.getConfig().getString("ytdlp", "yt-dlp");
             String filter = "fps=" + fps + ",scale=" + pixelWidth + ":" + pixelHeight + ":force_original_aspect_ratio=decrease,pad=" + pixelWidth + ":" + pixelHeight + ":(ow-iw)/2:(oh-ih)/2";
-            String seek = String.format(Locale.ROOT, "%.3f", offset);
-            Process video = new ProcessBuilder(ffmpeg, "-hide_banner", "-loglevel", "error", "-re", "-ss", seek,
-                    "-user_agent", YOUTUBE_USER_AGENT, "-referer", "https://www.youtube.com/", "-i", streams.videoUrl(),
-                    "-vf", filter, "-an", "-f", "rawvideo", "-pix_fmt", "rgb24", "-").start();
+            String videoFormat = "bv*[height<=" + sourceHeight + "][ext=webm]/b[height<=" + sourceHeight + "]/bv*[height<=" + sourceHeight + "]/b";
+            Process source = startYtPipe(ytDlp, videoFormat, offset);
+            yt = source; logStream(source, "yt-dlp video: ");
+            Process video = new ProcessBuilder(ffmpeg, "-hide_banner", "-loglevel", "error", "-re", "-i", "pipe:0", "-vf", filter, "-an", "-f", "rawvideo", "-pix_fmt", "rgb24", "-").start();
             synchronized (playbackLock) { if (!active(token)) { video.destroyForcibly(); return; } videoFfmpeg = video; }
             logStream(video, "ffmpeg video: ");
-            AudioSink sink = createAudioSink(); if (sink != null) startAudio(token, seek, streams.audioUrl(), ffmpeg, sink);
+            pipe(source, video, token, "Tikiti-video-pipe");
+            AudioSink sink = createAudioSink(); if (sink != null) startAudio(token, ytDlp, ffmpeg, offset, sink);
             byte[] buffer = new byte[pixelWidth * pixelHeight * 3]; long framesRead = 0;
             try (DataInputStream input = new DataInputStream(new BufferedInputStream(video.getInputStream(), 1 << 20))) {
                 while (active(token)) {
@@ -116,46 +116,36 @@ public final class Screen {
         } catch (Exception exception) { if (active(token)) plugin.getLogger().warning("Błąd odtwarzania: " + exception.getMessage()); }
     }
 
-    private record StreamSources(String videoUrl, String audioUrl) { }
-
-    private StreamSources resolveStream(long token) throws IOException, InterruptedException {
-        String ytDlp = plugin.getConfig().getString("ytdlp", "yt-dlp"); int sourceHeight = plugin.getConfig().getInt("source-height", 360);
-        // YouTube commonly provides video and audio as separate DASH streams. With -g yt-dlp prints
-        // two URLs for the first choice; if a combined format exists, it prints just one URL.
-        // Prefer H.264: many server ffmpeg builds are unstable when decoding YouTube AV1 streams.
-        // The final choices retain a fallback for videos where H.264 is not available.
-        String format = "bv*[height<=" + sourceHeight + "][vcodec^=avc1]+ba/"
-                + "b[height<=" + sourceHeight + "][vcodec^=avc1]/"
-                + "bv*[height<=" + sourceHeight + "]+ba/b[height<=" + sourceHeight + "]/bv*+ba/b";
-        Process resolver = new ProcessBuilder(ytDlp, "--no-playlist", "--no-warnings", "-g", "-f", format, url).redirectErrorStream(true).start();
-        yt = resolver; List<String> streams = new ArrayList<>(); List<String> outputLines = new ArrayList<>();
-        try (BufferedReader output = new BufferedReader(new InputStreamReader(resolver.getInputStream(), StandardCharsets.UTF_8))) {
-            String line; while ((line = output.readLine()) != null) {
-                outputLines.add(line);
-                if (line.startsWith("http")) streams.add(line);
-            }
-        }
-        resolver.waitFor(); if (!active(token)) return null;
-        if (streams.isEmpty()) {
-            String detail = outputLines.isEmpty() ? "brak odpowiedzi" : String.join(" | ", outputLines);
-            throw new IOException("yt-dlp nie zwrócił adresu strumienia: " + detail);
-        }
-        return new StreamSources(streams.get(0), streams.size() > 1 ? streams.get(1) : streams.get(0));
-    }
-
     private AudioSink createAudioSink() {
         if (VoiceBridge.api == null) return null;
         try { AudioSink sink = new ScreenAudio(center, (float) plugin.getConfig().getDouble("audio-distance", 20.0)); synchronized (playbackLock) { audio = sink; } return sink; }
         catch (Exception exception) { plugin.getLogger().warning("Dźwięk Simple Voice Chat niedostępny: " + exception.getMessage()); return null; }
     }
-    private void startAudio(long token, String seek, String stream, String ffmpeg, AudioSink sink) throws IOException {
-        Process process = new ProcessBuilder(ffmpeg, "-hide_banner", "-loglevel", "error", "-re", "-ss", seek,
-                "-user_agent", YOUTUBE_USER_AGENT, "-referer", "https://www.youtube.com/", "-i", stream,
-                "-vn", "-ac", "1", "-ar", "48000", "-f", "s16le", "-").start();
+    private Process startYtPipe(String ytDlp, String format, double offset) throws IOException {
+        List<String> command = new ArrayList<>(List.of(ytDlp, "--no-playlist", "-q", "--no-warnings"));
+        // yt-dlp cuts the source before it reaches ffmpeg, so seeking remains compatible with pipe mode.
+        if (offset >= 0.5) command.addAll(List.of("--download-sections", "*" + String.format(Locale.ROOT, "%.3f", offset) + "-inf"));
+        command.addAll(List.of("-f", format, "-o", "-", url));
+        return new ProcessBuilder(command).start();
+    }
+    private void startAudio(long token, String ytDlp, String ffmpeg, double offset, AudioSink sink) throws IOException {
+        Process source = startYtPipe(ytDlp, "ba/b", offset);
+        audioYt = source; logStream(source, "yt-dlp audio: ");
+        Process process = new ProcessBuilder(ffmpeg, "-hide_banner", "-loglevel", "error", "-re", "-i", "pipe:0", "-vn", "-ac", "1", "-ar", "48000", "-f", "s16le", "-").start();
         synchronized (playbackLock) { if (!active(token)) { process.destroyForcibly(); sink.stop(); return; } audioFfmpeg = process; }
         logStream(process, "ffmpeg audio: ");
+        pipe(source, process, token, "Tikiti-audio-pipe");
         Thread reader = new Thread(() -> { try { sink.feed(process.getInputStream(), () -> active(token)); } catch (IOException exception) { if (active(token)) plugin.getLogger().warning("Błąd audio: " + exception.getMessage()); } }, "Tikiti-audio");
         reader.setDaemon(true); reader.start();
+    }
+    private void pipe(Process source, Process target, long token, String name) {
+        Thread copier = new Thread(() -> {
+            try (InputStream input = source.getInputStream(); OutputStream output = target.getOutputStream()) {
+                byte[] bytes = new byte[65536]; int count;
+                while (active(token) && (count = input.read(bytes)) != -1) output.write(bytes, 0, count);
+            } catch (IOException ignored) { }
+        }, name);
+        copier.setDaemon(true); copier.start();
     }
     private void updateImage(byte[] rgb, int pixelWidth, int pixelHeight) {
         BufferedImage image = new BufferedImage(pixelWidth, pixelHeight, BufferedImage.TYPE_INT_RGB); int[] pixels = ((DataBufferInt) image.getRaster().getDataBuffer()).getData();
@@ -166,8 +156,8 @@ public final class Screen {
         try (BufferedReader errors = new BufferedReader(new InputStreamReader(process.getErrorStream(), StandardCharsets.UTF_8))) { String line; while ((line = errors.readLine()) != null) plugin.getLogger().warning(prefix + line); } catch (IOException ignored) { }
     }, "Tikiti-log"); logger.setDaemon(true); logger.start(); }
     private void stopProcessesLocked() {
-        if (yt != null) yt.destroyForcibly(); if (videoFfmpeg != null) videoFfmpeg.destroyForcibly(); if (audioFfmpeg != null) audioFfmpeg.destroyForcibly();
-        if (audio != null) { audio.stop(); audio = null; } yt = videoFfmpeg = audioFfmpeg = null;
+        if (yt != null) yt.destroyForcibly(); if (audioYt != null) audioYt.destroyForcibly(); if (videoFfmpeg != null) videoFfmpeg.destroyForcibly(); if (audioFfmpeg != null) audioFfmpeg.destroyForcibly();
+        if (audio != null) { audio.stop(); audio = null; } yt = audioYt = videoFfmpeg = audioFfmpeg = null;
     }
     public void stop() { synchronized (playbackLock) { if (!running) return; positionSeconds = currentSecondsLocked(); running = false; generation++; stopProcessesLocked(); } if (mapSender != null) mapSender.cancel(); frames.forEach(ItemFrame::remove); frames.clear(); }
 }
