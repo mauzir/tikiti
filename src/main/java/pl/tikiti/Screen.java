@@ -19,6 +19,7 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.concurrent.locks.LockSupport;
 
 public final class Screen {
     private static final int TILE = 128;
@@ -69,10 +70,10 @@ public final class Screen {
 
     public void play(String videoUrl) { synchronized (playbackLock) { url = videoUrl; paused = false; positionSeconds = 0; startedAtNanos = 0; startPlaybackLocked(); } }
     public boolean pause() { synchronized (playbackLock) {
-        if (paused || !running) return false; positionSeconds = currentSecondsLocked(); paused = true; generation++; stopProcessesLocked(); return true;
+        if (paused || !running) return false; positionSeconds = currentSecondsLocked(); paused = true; return true;
     } }
     public boolean resume() { synchronized (playbackLock) {
-        if (!paused || !running) return false; paused = false; startedAtNanos = 0; startPlaybackLocked(); return true;
+        if (!paused || !running) return false; paused = false; startedAtNanos = System.nanoTime(); return true;
     } }
     public void seek(double seconds) { synchronized (playbackLock) {
         positionSeconds = Math.max(0, seconds); generation++; stopProcessesLocked();
@@ -83,7 +84,7 @@ public final class Screen {
     public String formattedTime() { long seconds = (long) Math.floor(currentSeconds()); return String.format(Locale.ROOT, "%d:%02d", seconds / 60, seconds % 60); }
     private double currentSecondsLocked() { return paused || !running || startedAtNanos == 0 ? positionSeconds : positionSeconds + (System.nanoTime() - startedAtNanos) / 1_000_000_000.0; }
     private void startPlaybackLocked() { long token = ++generation; double offset = positionSeconds; Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> runPlayback(token, offset)); }
-    private boolean active(long token) { return running && !paused && generation == token; }
+    private boolean active(long token) { return running && generation == token; }
 
     private void runPlayback(long token, double offset) {
         try {
@@ -109,6 +110,7 @@ public final class Screen {
             byte[] buffer = new byte[pixelWidth * pixelHeight * 3]; long framesRead = 0;
             try (DataInputStream input = new DataInputStream(new BufferedInputStream(video.getInputStream(), 1 << 20))) {
                 while (active(token)) {
+                    if (paused) { LockSupport.parkNanos(20_000_000L); continue; }
                     input.readFully(buffer);
                     if (framesRead++ == 0) {
                         synchronized (playbackLock) { if (active(token)) startedAtNanos = System.nanoTime(); }
@@ -148,7 +150,15 @@ public final class Screen {
         // yt-dlp cuts the source before it reaches ffmpeg, so seeking remains compatible with pipe mode.
         if (offset >= 0.5) command.addAll(List.of("--download-sections", "*" + String.format(Locale.ROOT, "%.3f", offset) + "-inf"));
         command.addAll(List.of("-f", format, "-o", "-", url));
-        return new ProcessBuilder(command).start();
+        File runtimeTmp = new File(plugin.getDataFolder(), "tmp" + File.separator + "yt-" + UUID.randomUUID());
+        runtimeTmp.mkdirs();
+        ProcessBuilder builder = new ProcessBuilder(command);
+        // One-file yt-dlp unpacks native modules on launch. An isolated directory prevents
+        // PyInstaller extraction collisions after a seek/restart on Windows.
+        builder.environment().put("TEMP", runtimeTmp.getAbsolutePath());
+        builder.environment().put("TMP", runtimeTmp.getAbsolutePath());
+        builder.environment().put("TMPDIR", runtimeTmp.getAbsolutePath());
+        return builder.start();
     }
     private void receiveAudio(ServerSocket server, AudioSink sink, long token) {
         Thread receiver = new Thread(() -> {
