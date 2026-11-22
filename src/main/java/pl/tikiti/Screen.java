@@ -91,15 +91,14 @@ public final class Screen {
             int pixelWidth = width * TILE, pixelHeight = height * TILE; String ffmpeg = plugin.getConfig().getString("ffmpeg", "ffmpeg"), ytDlp = plugin.getConfig().getString("ytdlp", "yt-dlp");
             String filter = "fps=" + fps + ",scale=" + pixelWidth + ":" + pixelHeight + ":force_original_aspect_ratio=decrease,pad=" + pixelWidth + ":" + pixelHeight + ":(ow-iw)/2:(oh-ih)/2";
             String videoFormat = "bv*[height<=" + sourceHeight + "][ext=webm]/b[height<=" + sourceHeight + "]/bv*[height<=" + sourceHeight + "]/b";
-            String audioUrl = resolveAudioUrl(ytDlp);
             Process source = startYtPipe(ytDlp, videoFormat, offset);
             yt = source; logStream(source, "yt-dlp video: ");
-            AudioSink sink = audioUrl == null ? null : createAudioSink();
+            AudioSink sink = null;
             ServerSocket server = sink == null ? null : new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
             if (server != null) audioServer = server;
             List<String> ffmpegCommand = new ArrayList<>(List.of(ffmpeg, "-hide_banner", "-loglevel", "error", "-re", "-i", "pipe:0",
                     "-map", "0:v:0", "-vf", filter, "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"));
-            if (server != null) ffmpegCommand.addAll(List.of("-re", "-user_agent", YOUTUBE_USER_AGENT, "-referer", "https://www.youtube.com/", "-i", audioUrl,
+            if (server != null) ffmpegCommand.addAll(List.of("-re", "-user_agent", YOUTUBE_USER_AGENT, "-referer", "https://www.youtube.com/", "-i", "",
                     "-map", "1:a:0", "-vn", "-ac", "1", "-ar", "48000", "-f", "s16le",
                     "tcp://127.0.0.1:" + server.getLocalPort()));
             Process video = new ProcessBuilder(ffmpegCommand).start();
