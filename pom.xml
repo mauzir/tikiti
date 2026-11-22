@@ -5,8 +5,10 @@
   <artifactId>Tikiti</artifactId>
   <version>1.0</version>
   <properties>
+    <!-- kompilujemy pod najstarsza wspierana (26.1), dziala tez na 26.2 i 26.3 -->
     <paper.version>26.1.2.build.69-stable</paper.version>
     <maven.compiler.release>25</maven.compiler.release>
+    <voicechat.api.version>2.5.0</voicechat.api.version>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
   </properties>
   <repositories>
@@ -14,12 +16,22 @@
       <id>papermc</id>
       <url>https://repo.papermc.io/repository/maven-public/</url>
     </repository>
+    <repository>
+      <id>maxhenkel</id>
+      <url>https://maven.maxhenkel.de/repository/public</url>
+    </repository>
   </repositories>
   <dependencies>
     <dependency>
       <groupId>io.papermc.paper</groupId>
       <artifactId>paper-api</artifactId>
       <version>${paper.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>de.maxhenkel.voicechat</groupId>
+      <artifactId>voicechat-api</artifactId>
+      <version>${voicechat.api.version}</version>
       <scope>provided</scope>
     </dependency>
   </dependencies>
