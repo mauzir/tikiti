@@ -83,15 +83,15 @@ public final class Screen {
 
     private void runPlayback(long token, double offset) {
         try {
-            String stream = resolveStream(token); if (stream == null || !active(token)) return;
+            StreamSources streams = resolveStream(token); if (streams == null || !active(token)) return;
             int fps = plugin.getConfig().getInt("fps", 10), sourceHeight = plugin.getConfig().getInt("source-height", 360);
             int pixelWidth = width * TILE, pixelHeight = height * TILE; String ffmpeg = plugin.getConfig().getString("ffmpeg", "ffmpeg");
             String filter = "fps=" + fps + ",scale=" + pixelWidth + ":" + pixelHeight + ":force_original_aspect_ratio=decrease,pad=" + pixelWidth + ":" + pixelHeight + ":(ow-iw)/2:(oh-ih)/2";
             String seek = String.format(Locale.ROOT, "%.3f", offset);
-            Process video = new ProcessBuilder(ffmpeg, "-hide_banner", "-loglevel", "error", "-re", "-ss", seek, "-i", stream, "-vf", filter, "-an", "-f", "rawvideo", "-pix_fmt", "rgb24", "-").start();
+            Process video = new ProcessBuilder(ffmpeg, "-hide_banner", "-loglevel", "error", "-re", "-ss", seek, "-i", streams.videoUrl(), "-vf", filter, "-an", "-f", "rawvideo", "-pix_fmt", "rgb24", "-").start();
             synchronized (playbackLock) { if (!active(token)) { video.destroyForcibly(); return; } videoFfmpeg = video; }
             logStream(video, "ffmpeg video: ");
-            AudioSink sink = createAudioSink(); if (sink != null) startAudio(token, seek, stream, ffmpeg, sink);
+            AudioSink sink = createAudioSink(); if (sink != null) startAudio(token, seek, streams.audioUrl(), ffmpeg, sink);
             byte[] buffer = new byte[pixelWidth * pixelHeight * 3]; long framesRead = 0;
             try (DataInputStream input = new DataInputStream(new BufferedInputStream(video.getInputStream(), 1 << 20))) {
                 while (active(token)) {
@@ -108,15 +108,27 @@ public final class Screen {
         } catch (Exception exception) { if (active(token)) plugin.getLogger().warning("Błąd odtwarzania: " + exception.getMessage()); }
     }
 
-    private String resolveStream(long token) throws IOException, InterruptedException {
+    private record StreamSources(String videoUrl, String audioUrl) { }
+
+    private StreamSources resolveStream(long token) throws IOException, InterruptedException {
         String ytDlp = plugin.getConfig().getString("ytdlp", "yt-dlp"); int sourceHeight = plugin.getConfig().getInt("source-height", 360);
-        Process resolver = new ProcessBuilder(ytDlp, "--no-playlist", "--no-warnings", "-g", "-f", "b[height<=" + sourceHeight + "]/b", url).redirectErrorStream(true).start();
-        yt = resolver; String stream = null;
+        // YouTube commonly provides video and audio as separate DASH streams. With -g yt-dlp prints
+        // two URLs for the first choice; if a combined format exists, it prints just one URL.
+        String format = "bv*[height<=" + sourceHeight + "]+ba/b[height<=" + sourceHeight + "]/bv*+ba/b";
+        Process resolver = new ProcessBuilder(ytDlp, "--no-playlist", "--no-warnings", "-g", "-f", format, url).redirectErrorStream(true).start();
+        yt = resolver; List<String> streams = new ArrayList<>(); List<String> outputLines = new ArrayList<>();
         try (BufferedReader output = new BufferedReader(new InputStreamReader(resolver.getInputStream(), StandardCharsets.UTF_8))) {
-            String line; while ((line = output.readLine()) != null) if (stream == null && line.startsWith("http")) stream = line;
+            String line; while ((line = output.readLine()) != null) {
+                outputLines.add(line);
+                if (line.startsWith("http")) streams.add(line);
+            }
         }
         resolver.waitFor(); if (!active(token)) return null;
-        if (stream == null) throw new IOException("yt-dlp nie zwrócił adresu strumienia"); return stream;
+        if (streams.isEmpty()) {
+            String detail = outputLines.isEmpty() ? "brak odpowiedzi" : String.join(" | ", outputLines);
+            throw new IOException("yt-dlp nie zwrócił adresu strumienia: " + detail);
+        }
+        return new StreamSources(streams.get(0), streams.size() > 1 ? streams.get(1) : streams.get(0));
     }
 
     private AudioSink createAudioSink() {
