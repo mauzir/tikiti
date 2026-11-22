@@ -117,7 +117,7 @@ public class Screen {
                     return;
                 }
                 plugin.getLogger().info("yt-dlp OK, startuje ffmpeg...");
-                ff = new ProcessBuilder(ffBin, "-hide_banner", "-loglevel", "error", "-re", "-i", stream,
+                ff = new ProcessBuilder(ffBin, "-nostdin", "-hide_banner", "-loglevel", "error", "-re", "-i", stream,
                         "-vf", "fps=" + fps + ",scale=" + W + ":" + H
                                 + ":force_original_aspect_ratio=decrease,pad=" + W + ":" + H + ":(ow-iw)/2:(oh-ih)/2",
                         "-f", "rawvideo", "-pix_fmt", "rgb24", "-an", "-")
@@ -147,6 +147,10 @@ public class Screen {
                             tiles[row * w + c].img = img.getSubimage(c * T, row * T, T, T);
                     }
                 } finally {
+                    try { ffp.waitFor(3, java.util.concurrent.TimeUnit.SECONDS); errT.join(1000); } catch (InterruptedException ignored) { }
+                    if (running && !ffp.isAlive())
+                        plugin.getLogger().info("ffmpeg kod wyjscia: " + ffp.exitValue()
+                                + " (137=zabity przez system/limit pamieci, 126/127=nie da sie uruchomic, 132/139=awaria)");
                     if (running) plugin.getLogger().info("Koniec strumienia ffmpeg, odebrano klatek: " + frames
                             + (frames == 0 ? " (ffmpeg nic nie zwrocil - patrz linijki 'ffmpeg:' wyzej)" : ""));
                 }
